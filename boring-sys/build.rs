@@ -269,7 +269,7 @@ fn get_boringssl_cmake_config() -> cmake::Config {
                 "arm" => {
                     boringssl_cmake.define(
                         "CMAKE_TOOLCHAIN_FILE",
-                        pwd.join("cmake/arm-linux.cmake").as_os_str(),
+                        pwd.join("cmake/armv7-linux.cmake").as_os_str(),
                     );
                 }
                 _ => {
