@@ -548,8 +548,7 @@ fn test_verify_revoked() {
     store_bldr.add_crl(crl).unwrap();
     store_bldr
         .param_mut()
-        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL)
-        .unwrap();
+        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
     let store = store_bldr.build();
 
     let mut context = X509StoreContext::new().unwrap();
@@ -584,8 +583,7 @@ fn test_untrusted_valid_crl() {
     store_bldr.add_cert(ca).unwrap();
     store_bldr
         .param_mut()
-        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL)
-        .unwrap();
+        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
     store_bldr.param_mut().set_time(1656633600); // 2022-07-01, everything is valid
     let store = store_bldr.build();
 
@@ -621,8 +619,7 @@ fn test_untrusted_invalid_crl() {
     store_bldr.add_cert(ca).unwrap();
     store_bldr
         .param_mut()
-        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL)
-        .unwrap();
+        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
     store_bldr.param_mut().set_time(1656633600); // 2022-07-01, everything is valid
     let store = store_bldr.build();
 
@@ -794,8 +791,7 @@ fn test_custom_time_crl() {
     store_bldr.add_cert(ca).unwrap();
     store_bldr
         .param_mut()
-        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL)
-        .unwrap();
+        .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
     store_bldr.param_mut().set_time(1640995200); // 2022-01-01, before the CRL's issue date
     let store = store_bldr.build();
 

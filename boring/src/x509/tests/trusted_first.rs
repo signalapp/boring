@@ -43,7 +43,7 @@ fn test_verify_cert() {
             &leaf,
             &[&root1, &root2],
             &[&intermediate, &root1_cross],
-            |param| param.set_flags(X509VerifyFlags::TRUSTED_FIRST).unwrap(),
+            |param| param.set_flags(X509VerifyFlags::TRUSTED_FIRST),
         )
     );
 
@@ -53,14 +53,14 @@ fn test_verify_cert() {
             &leaf,
             &[&root1, &root2],
             &[&intermediate, &root1_cross],
-            |param| param.clear_flags(X509VerifyFlags::TRUSTED_FIRST).unwrap(),
+            |param| param.clear_flags(X509VerifyFlags::TRUSTED_FIRST),
         )
     );
 
     assert_eq!(
         Ok(()),
         verify(&leaf, &[&root1], &[&intermediate, &root1_cross], |param| {
-            param.clear_flags(X509VerifyFlags::TRUSTED_FIRST).unwrap()
+            param.clear_flags(X509VerifyFlags::TRUSTED_FIRST)
         },)
     );
 }
@@ -75,7 +75,7 @@ fn verify(
         let mut builder = X509StoreBuilder::new().unwrap();
 
         for cert in trusted {
-            builder.add_cert((**cert).to_owned()).unwrap();
+            builder.add_cert((**cert).to_owned());
         }
 
         builder.build()
