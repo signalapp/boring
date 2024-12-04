@@ -34,13 +34,16 @@ use crate::ffi;
 use crate::hash::{DigestBytes, MessageDigest};
 use crate::nid::Nid;
 use crate::pkey::{HasPrivate, HasPublic, PKey, PKeyRef, Public};
+#[cfg(feature = "ssl")]
 use crate::ssl::SslRef;
 use crate::stack::{Stack, StackRef, Stackable};
 use crate::string::OpensslString;
 use crate::util::ForeignTypeRefExt;
+use crate::x509::crl::X509CRL;
 use crate::x509::verify::X509VerifyParamRef;
 use crate::{cvt, cvt_n, cvt_p};
 
+pub mod crl;
 pub mod extension;
 pub mod store;
 pub mod verify;
@@ -59,6 +62,7 @@ foreign_type_and_impl_send_sync! {
 impl X509StoreContext {
     /// Returns the index which can be used to obtain a reference to the `Ssl` associated with a
     /// context.
+    #[cfg(feature = "ssl")]
     #[corresponds(SSL_get_ex_data_X509_STORE_CTX_idx)]
     pub fn ssl_idx() -> Result<Index<X509StoreContext, SslRef>, ErrorStack> {
         unsafe { cvt_n(ffi::SSL_get_ex_data_X509_STORE_CTX_idx()).map(|idx| Index::from_raw(idx)) }
@@ -157,6 +161,32 @@ impl X509StoreContextRef {
     #[corresponds(X509_verify_cert)]
     pub fn verify_cert(&mut self) -> Result<bool, ErrorStack> {
         unsafe { cvt_n(ffi::X509_verify_cert(self.as_ptr())).map(|n| n != 0) }
+    }
+
+    /// Verifies the stored certificate with additional untrusted CRLs
+    ///
+    /// Returns `true` if verification succeeds. The `error` method will return the specific
+    /// validation error if the certificate was not valid.
+    ///
+    /// This will only work inside of a call to `init`.
+    ///
+    /// This corresponds to [`X509_STORE_CTX_set0_crls`] followed by [`X509_verify_cert`].
+    ///
+    /// [`X509_STORE_CTX_set0_crls`]:  https://www.openssl.org/docs/man1.0.2/crypto/X509_STORE_CTX_set0_crls.html
+    /// [`X509_verify_cert`]:  https://www.openssl.org/docs/man1.0.2/crypto/X509_verify_cert.html
+    pub fn verify_cert_with_crls(
+        &mut self,
+        untrusted_crls: Stack<X509CRL>,
+    ) -> Result<bool, ErrorStack> {
+        unsafe {
+            ffi::X509_STORE_CTX_set0_crls(self.as_ptr(), untrusted_crls.as_ptr());
+            let res = cvt_n(ffi::X509_verify_cert(self.as_ptr())).map(|n| n != 0);
+            // set0_crls does not take ownership of the stack, so we'll drop and free
+            // untrusted_crls after this method. null out the crls in ctx to make sure
+            // no one has a reference to it.
+            ffi::X509_STORE_CTX_set0_crls(self.as_ptr(), ptr::null_mut());
+            res
+        }
     }
 
     /// Set the verify result of the context.
@@ -576,6 +606,21 @@ impl X509Ref {
         }
     }
 
+    /// Returns the extensions of the certificate.
+    ///
+    /// This corresponds to [`X509_get0_extensions`].
+    ///
+    /// [`X509_get0_extensions`]: https://www.openssl.org/docs/man1.1.1/man3/X509_get0_extensions.html
+    pub fn extensions(&self) -> Option<&StackRef<X509Extension>> {
+        unsafe {
+            let stack = ffi::X509_get0_extensions(self.as_ptr());
+            if stack.is_null() {
+                return None;
+            }
+            Some(StackRef::from_ptr(stack as *mut _))
+        }
+    }
+
     pub fn check_host(&self, host: &str) -> Result<bool, ErrorStack> {
         unsafe {
             cvt_n(ffi::X509_check_host(
@@ -848,6 +893,47 @@ impl X509ExtensionRef {
         /// Serializes the Extension to its standard DER encoding.
         to_der,
         ffi::i2d_X509_EXTENSION
+    }
+}
+
+impl X509ExtensionRef {
+    /// Returns whether this extension is critical
+    ///
+    /// This corresponds to [`X509_EXTENSION_get_critical`].
+    ///
+    /// [`X509_EXTENSION_get_critical`]: https://www.openssl.org/docs/man1.1.1/man3/X509_EXTENSION_get_critical
+    pub fn critical(&self) -> bool {
+        unsafe { ffi::X509_EXTENSION_get_critical(self.as_ptr()) != 0 }
+    }
+
+    /// Returns the `Asn1Object` of this `X509Extension`
+    ///
+    /// This can be used to determine the `Nid` of this extension
+    ///
+    /// This corresponds to [`X509_EXTENSION_get_object`].
+    ///
+    /// [`X509_EXTENSION_get_object`]: https://www.openssl.org/docs/man1.1.1/man3/X509_EXTENSION_get_object
+    pub fn object(&self) -> &Asn1ObjectRef {
+        unsafe { Asn1ObjectRef::from_ptr(ffi::X509_EXTENSION_get_object(self.as_ptr())) }
+    }
+
+    /// Returns the `data` of this `X509Extension`
+    ///
+    /// This corresponds to [`X509_EXTENSION_get_data`].
+    ///
+    /// [`X509_EXTENSION_get_data`]: https://www.openssl.org/docs/man1.1.1/man3/X509_EXTENSION_get_data
+    pub fn data(&self) -> &Asn1StringRef {
+        unsafe { Asn1StringRef::from_ptr(ffi::X509_EXTENSION_get_data(self.as_ptr())) }
+    }
+}
+
+impl fmt::Debug for X509ExtensionRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_struct("X509Extension")
+            .field("critical", &self.critical())
+            .field("object_nid", &self.object())
+            .finish()
     }
 }
 

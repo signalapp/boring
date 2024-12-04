@@ -31,7 +31,7 @@ bitflags! {
 pub use X509VerifyFlags as X509Flags;
 
 bitflags! {
-    /// Flags used to check an `X509` certificate.
+    /// Flags used to configure verification of an `X509` certificate
     #[derive(Debug, PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
     #[repr(transparent)]
     pub struct X509VerifyFlags: c_ulong {

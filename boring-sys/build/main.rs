@@ -587,7 +587,9 @@ fn built_boring_source_path(config: &Config) -> &PathBuf {
             cfg.define("FIPS", "1");
         }
 
-        cfg.build_target("ssl").build();
+        if config.features.ssl {
+            cfg.build_target("ssl").build();
+        }
         cfg.build_target("crypto").build()
     })
 }
@@ -674,7 +676,9 @@ fn main() {
     }
 
     println!("cargo:rustc-link-lib=static=crypto");
-    println!("cargo:rustc-link-lib=static=ssl");
+    if config.features.ssl {
+        println!("cargo:rustc-link-lib=static=ssl");
+    }
 
     let include_path = config.env.include_path.clone().unwrap_or_else(|| {
         if let Some(bssl_path) = &config.env.path {
