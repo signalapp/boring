@@ -187,9 +187,7 @@ impl X509StoreContextRef {
         impl Drop for Cleanup<'_> {
             fn drop(&mut self) {
                 unsafe {
-                    let error = ffi::X509_STORE_CTX_get_error(self.0.as_ptr());
                     ffi::X509_STORE_CTX_cleanup(self.0.as_ptr());
-                    ffi::X509_STORE_CTX_set_error(self.0.as_ptr(), error);
                 }
             }
         }
@@ -288,15 +286,10 @@ impl X509StoreContextRef {
         unsafe {
             ffi::X509_STORE_CTX_set0_crls(self.as_ptr(), untrusted_crls.as_ptr());
             let res = cvt_n(ffi::X509_verify_cert(self.as_ptr())).map(|n| n != 0);
-            let verify_error = ffi::X509_STORE_CTX_get_error(self.as_ptr());
             // set0_crls does not take ownership of the stack, so we'll drop and free
             // untrusted_crls after this method. null out the crls in ctx to make sure
             // no one has a reference to it.
             ffi::X509_STORE_CTX_set0_crls(self.as_ptr(), ptr::null_mut());
-            if matches!(res, Ok(false)) {
-                // Preserve the verification error because clearing crls may reset it.
-                ffi::X509_STORE_CTX_set_error(self.as_ptr(), verify_error);
-            }
             res
         }
     }
