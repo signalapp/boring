@@ -700,13 +700,16 @@ impl From<u16> for SslSignatureAlgorithm {
 /// Numeric identifier of a TLS curve.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[deprecated(note = "this is not ABI-stable and will be removed in the next release")]
 pub struct SslCurveNid(c_int);
 
 /// A TLS Curve.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[deprecated(note = "this is not ABI-stable and will be removed in the next release")]
 pub struct SslCurve(c_int);
 
+#[allow(deprecated)]
 impl SslCurve {
     pub const SECP224R1: SslCurve = SslCurve(ffi::SSL_CURVE_SECP224R1 as _);
 
@@ -1036,7 +1039,7 @@ impl SslContextBuilder {
             has_shared_cert_store: false,
         };
 
-        builder.set_ex_data(*RPK_FLAG_INDEX, is_rpk);
+        builder.replace_ex_data(*RPK_FLAG_INDEX, is_rpk);
 
         builder
     }
@@ -1841,7 +1844,7 @@ impl SslContextBuilder {
             + Sync
             + Send,
     {
-        self.set_psk_client_callback(callback)
+        self.set_psk_client_callback(callback);
     }
 
     /// Sets the callback for providing an identity and pre-shared key for a TLS-PSK server.
@@ -1953,17 +1956,22 @@ impl SslContextBuilder {
         }
     }
 
+    /// DEPRECATED: use `Self::replace_ex_data()` to set the data.
+    ///
+    /// If this method is called more than once with the same index, any previous
+    /// value stored in the `SslContextBuilder` may be leaked. This will change in the future release.
+    ///
     /// Sets the extra data at the specified index.
     ///
     /// This can be used to provide data to callbacks registered with the context. Use the
     /// `SslContext::new_ex_index` method to create an `Index`.
-    ///
-    /// Note that if this method is called multiple times with the same index, any previous
-    /// value stored in the `SslContextBuilder` will be leaked.
     #[corresponds(SSL_CTX_set_ex_data)]
+    #[deprecated(
+        note = "This may leak memory. Don't rely on leaking. Use `replace_ex_data()` instead."
+    )]
     pub fn set_ex_data<T>(&mut self, index: Index<SslContext, T>, data: T) {
         unsafe {
-            self.ctx.set_ex_data(index, data);
+            self.ctx.write_ex_data(index, data);
         }
     }
 
@@ -1974,6 +1982,7 @@ impl SslContextBuilder {
     ///
     /// Any previous value will be returned and replaced by the new one.
     #[corresponds(SSL_CTX_set_ex_data)]
+    #[doc(alias = "set_ex_data")]
     pub fn replace_ex_data<T>(&mut self, index: Index<SslContext, T>, data: T) -> Option<T> {
         unsafe { self.ctx.replace_ex_data(index, data) }
     }
@@ -2043,11 +2052,6 @@ impl SslContextBuilder {
     }
 
     /// Sets the context's supported curves.
-    //
-    // If the "kx-*" flags are used to set key exchange preference, then don't allow the user to
-    // set them here. This ensures we don't override the user's preference without telling them:
-    // when the flags are used, the preferences are set just before connecting or accepting.
-    #[cfg(not(feature = "kx-safe-default"))]
     #[corresponds(SSL_CTX_set1_curves_list)]
     pub fn set_curves_list(&mut self, curves: &str) -> Result<(), ErrorStack> {
         let curves = CString::new(curves).map_err(ErrorStack::internal_error)?;
@@ -2060,6 +2064,8 @@ impl SslContextBuilder {
         }
     }
 
+    /// Use `Self::set_curves_list()` instead.
+    ///
     /// Sets the context's supported curves.
     //
     // If the "kx-*" flags are used to set key exchange preference, then don't allow the user to
@@ -2067,6 +2073,10 @@ impl SslContextBuilder {
     // when the flags are used, the preferences are set just before connecting or accepting.
     #[corresponds(SSL_CTX_set1_curves)]
     #[cfg(not(feature = "kx-safe-default"))]
+    #[deprecated(
+        note = "Use set_curves_list(). set_curves() and SslCurve will be removed in the next release"
+    )]
+    #[allow(deprecated)]
     pub fn set_curves(&mut self, curves: &[SslCurve]) -> Result<(), ErrorStack> {
         let curves: Vec<i32> = curves
             .iter()
@@ -2292,10 +2302,11 @@ impl SslContextRef {
         }
     }
 
+    /// Internal: does not run destructors for the previous value
     // Unsafe because SSL contexts are not guaranteed to be unique, we call
     // this only from SslContextBuilder.
     #[corresponds(SSL_CTX_set_ex_data)]
-    unsafe fn set_ex_data<T>(&mut self, index: Index<SslContext, T>, data: T) {
+    unsafe fn write_ex_data<T>(&mut self, index: Index<SslContext, T>, data: T) {
         unsafe {
             let data = Box::into_raw(Box::new(data)) as *mut c_void;
             ffi::SSL_CTX_set_ex_data(self.as_ptr(), index.as_raw(), data);
@@ -2310,7 +2321,7 @@ impl SslContextRef {
             return Some(mem::replace(old, data));
         }
 
-        self.set_ex_data(index, data);
+        self.write_ex_data(index, data);
 
         None
     }
@@ -2564,7 +2575,7 @@ impl SslCipherRef {
             CStr::from_ptr(ptr as *const _)
         };
 
-        str::from_utf8(version.to_bytes()).unwrap()
+        version.to_str().unwrap()
     }
 
     /// Returns the number of bits used for the cipher.
@@ -2590,7 +2601,7 @@ impl SslCipherRef {
             // SSL_CIPHER_description requires a buffer of at least 128 bytes.
             let mut buf = [0; 128];
             let ptr = ffi::SSL_CIPHER_description(self.as_ptr(), buf.as_mut_ptr(), 128);
-            String::from_utf8(CStr::from_ptr(ptr as *const _).to_bytes().to_vec()).unwrap()
+            CStr::from_ptr(ptr.cast()).to_string_lossy().into_owned()
         }
     }
 
@@ -2952,6 +2963,8 @@ impl SslRef {
     /// Sets the ongoing session's supported groups by their named identifiers
     /// (formerly referred to as curves).
     #[corresponds(SSL_set1_groups)]
+    #[deprecated(note = "SslCurveNid will be removed in the next release. Use set_curves_list")]
+    #[allow(deprecated)]
     pub fn set_group_nids(&mut self, group_nids: &[SslCurveNid]) -> Result<(), ErrorStack> {
         unsafe {
             cvt_0i(ffi::SSL_set1_curves(
@@ -3000,6 +3013,8 @@ impl SslRef {
     /// Returns the [`SslCurve`] used for this `SslRef`.
     #[corresponds(SSL_get_curve_id)]
     #[must_use]
+    #[deprecated(note = "SslCurve will be removed in the next release")]
+    #[allow(deprecated)]
     pub fn curve(&self) -> Option<SslCurve> {
         let curve_id = unsafe { ffi::SSL_get_curve_id(self.as_ptr()) };
         if curve_id == 0 {
@@ -3216,6 +3231,8 @@ impl SslRef {
     }
 
     /// Returns a short string describing the state of the session.
+    ///
+    /// Returns empty string if the state wasn't valid UTF-8.
     #[corresponds(SSL_state_string)]
     #[must_use]
     pub fn state_string(&self) -> &'static str {
@@ -3224,10 +3241,12 @@ impl SslRef {
             CStr::from_ptr(ptr as *const _)
         };
 
-        str::from_utf8(state.to_bytes()).unwrap()
+        state.to_str().unwrap_or_default()
     }
 
     /// Returns a longer string describing the state of the session.
+    ///
+    /// Returns empty string if the state wasn't valid UTF-8.
     #[corresponds(SSL_state_string_long)]
     #[must_use]
     pub fn state_string_long(&self) -> &'static str {
@@ -3236,7 +3255,7 @@ impl SslRef {
             CStr::from_ptr(ptr as *const _)
         };
 
-        str::from_utf8(state.to_bytes()).unwrap()
+        state.to_str().unwrap_or_default()
     }
 
     /// Sets the host name to be sent to the server for Server Name Indication (SNI).
@@ -3348,6 +3367,8 @@ impl SslRef {
     }
 
     /// Returns a string describing the protocol version of the session.
+    ///
+    /// This may panic if the string isn't valid UTF-8 for some reason. Use [`Self::version2`] instead.
     #[corresponds(SSL_get_version)]
     #[must_use]
     pub fn version_str(&self) -> &'static str {
@@ -3356,7 +3377,7 @@ impl SslRef {
             CStr::from_ptr(ptr as *const _)
         };
 
-        str::from_utf8(version.to_bytes()).unwrap()
+        version.to_str().unwrap()
     }
 
     /// Sets the minimum supported protocol version.
@@ -4028,10 +4049,11 @@ impl<S> MidHandshakeSslStream<S> {
             Ok(self.stream)
         } else {
             self.error = self.stream.make_error(ret);
-            match self.error.would_block() {
-                true => Err(HandshakeError::WouldBlock(self)),
-                false => Err(HandshakeError::Failure(self)),
-            }
+            Err(if self.error.would_block() {
+                HandshakeError::WouldBlock(self)
+            } else {
+                HandshakeError::Failure(self)
+            })
         }
     }
 }
@@ -4455,16 +4477,11 @@ where
             Ok(stream)
         } else {
             let error = stream.make_error(ret);
-            match error.would_block() {
-                true => Err(HandshakeError::WouldBlock(MidHandshakeSslStream {
-                    stream,
-                    error,
-                })),
-                false => Err(HandshakeError::Failure(MidHandshakeSslStream {
-                    stream,
-                    error,
-                })),
-            }
+            Err(if error.would_block() {
+                HandshakeError::WouldBlock(MidHandshakeSslStream { stream, error })
+            } else {
+                HandshakeError::Failure(MidHandshakeSslStream { stream, error })
+            })
         }
     }
 }
