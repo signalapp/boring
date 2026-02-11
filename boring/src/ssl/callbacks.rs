@@ -8,12 +8,15 @@ use super::{
 };
 use crate::error::ErrorStack;
 use crate::ffi;
+use crate::hmac::HmacCtxRef;
+use crate::ssl::TicketKeyCallbackResult;
+use crate::symm::CipherCtxRef;
 use crate::x509::{X509StoreContext, X509StoreContextRef};
 use foreign_types::ForeignType;
 use foreign_types::ForeignTypeRef;
-use libc::c_char;
-use libc::{c_int, c_uchar, c_uint, c_void};
+use libc::{c_char, c_int, c_uchar, c_uint, c_void};
 use std::ffi::CStr;
+use std::mem::{self, MaybeUninit};
 use std::ptr;
 use std::slice;
 use std::str;
@@ -38,7 +41,7 @@ where
 
     // SAFETY: The callback won't outlive the context it's associated with
     // because there is no `X509StoreContextRef::ssl_mut(&mut self)` method.
-    let verify = unsafe { &*(verify as *const F) };
+    let verify = unsafe { &*std::ptr::from_ref::<F>(verify) };
 
     c_int::from(verify(preverify_ok != 0, ctx))
 }
@@ -87,7 +90,7 @@ where
     // SAFETY: The callback won't outlive the context it's associated with
     // because there is no way to get a mutable reference to the `SslContext`,
     // so the callback can't replace itself.
-    let verify = unsafe { &*(verify as *const F) };
+    let verify = unsafe { &*std::ptr::from_ref::<F>(verify) };
 
     c_int::from(verify(ctx))
 }
@@ -157,7 +160,7 @@ where
 
     // Give the callback mutable slices into which it can write the identity and psk.
     let identity_sl =
-        unsafe { slice::from_raw_parts_mut(identity as *mut u8, max_identity_len as usize) };
+        unsafe { slice::from_raw_parts_mut(identity.cast::<u8>(), max_identity_len as usize) };
     let psk_sl = unsafe { slice::from_raw_parts_mut(psk, max_psk_len as usize) };
 
     let ssl_context = ssl.ssl_context().to_owned();
@@ -269,6 +272,68 @@ where
     }
 }
 
+unsafe fn to_uninit<'a, T: 'a>(ptr: *mut T) -> &'a mut MaybeUninit<T> {
+    assert!(!ptr.is_null());
+    unsafe { &mut *ptr.cast::<MaybeUninit<T>>() }
+}
+
+pub(super) unsafe extern "C" fn raw_ticket_key<F>(
+    ssl: *mut ffi::SSL,
+    key_name: *mut u8,
+    iv: *mut u8,
+    evp_ctx: *mut ffi::EVP_CIPHER_CTX,
+    hmac_ctx: *mut ffi::HMAC_CTX,
+    encrypt: c_int,
+) -> c_int
+where
+    F: Fn(
+            &SslRef,
+            &mut [u8; 16],
+            &mut [u8; ffi::EVP_MAX_IV_LENGTH as usize],
+            &mut CipherCtxRef,
+            &mut HmacCtxRef,
+            bool,
+        ) -> TicketKeyCallbackResult
+        + 'static
+        + Sync
+        + Send,
+{
+    // SAFETY: boring provides valid inputs.
+    let ssl = unsafe { SslRef::from_ptr_mut(ssl) };
+
+    let ssl_context = ssl.ssl_context().to_owned();
+    let callback = ssl_context
+        .ex_data::<F>(SslContext::cached_ex_index::<F>())
+        .expect("expected session resumption callback");
+
+    // SAFETY: the callback guarantees that key_name is 16 bytes
+    let key_name =
+        unsafe { to_uninit(key_name.cast::<[u8; ffi::SSL_TICKET_KEY_NAME_LEN as usize]>()) };
+
+    // SAFETY: the callback provides 16 bytes iv
+    //
+    // https://github.com/google/boringssl/blob/main/ssl/ssl_session.cc#L331
+    let iv = unsafe { to_uninit(iv.cast::<[u8; ffi::EVP_MAX_IV_LENGTH as usize]>()) };
+
+    // When encrypting a new ticket, encrypt will be one.
+    let encrypt = encrypt == 1;
+
+    // Zero-initialize the key_name and iv, since the application is expected to populate these
+    // fields in the encrypt mode.
+    if encrypt {
+        *key_name = MaybeUninit::zeroed();
+        *iv = MaybeUninit::zeroed();
+    }
+    let key_name = unsafe { key_name.assume_init_mut() };
+    let iv = unsafe { iv.assume_init_mut() };
+
+    // The EVP_CIPHER_CTX and HMAC_CTX are owned by boringSSL.
+    let evp_ctx = unsafe { CipherCtxRef::from_ptr_mut(evp_ctx) };
+    let hmac_ctx = unsafe { HmacCtxRef::from_ptr_mut(hmac_ctx) };
+
+    callback(ssl, key_name, iv, evp_ctx, hmac_ctx, encrypt).into()
+}
+
 pub(super) unsafe extern "C" fn raw_alpn_select<F>(
     ssl: *mut ffi::SSL,
     out: *mut *const c_uchar,
@@ -293,7 +358,7 @@ where
 
     match callback(ssl, protos) {
         Ok(proto) => {
-            *out = proto.as_ptr() as *const c_uchar;
+            *out = proto.as_ptr();
             *outlen = proto.len() as c_uchar;
 
             ffi::SSL_TLSEXT_ERR_OK
@@ -377,7 +442,7 @@ where
     // SAFETY: We can make `callback` outlive `ssl` because it is a callback
     // stored in the session context set in `Ssl::new` so it is always
     // guaranteed to outlive the lifetime of this function's scope.
-    let callback = unsafe { &*(callback as *const F) };
+    let callback = unsafe { &*std::ptr::from_ref::<F>(callback) };
 
     callback(ssl, session);
 
@@ -430,7 +495,7 @@ where
     // SAFETY: We can make `callback` outlive `ssl` because it is a callback
     // stored in the session context set in `Ssl::new` so it is always
     // guaranteed to outlive the lifetime of this function's scope.
-    let callback = unsafe { &*(callback as *const F) };
+    let callback = unsafe { &*std::ptr::from_ref::<F>(callback) };
 
     match callback(ssl, data) {
         Ok(Some(session)) => {
@@ -450,7 +515,7 @@ where
     F: Fn(&SslRef, &str) + 'static + Sync + Send,
 {
     // SAFETY: boring provides valid inputs.
-    let ssl = unsafe { SslRef::from_ptr(ssl as *mut _) };
+    let ssl = unsafe { SslRef::from_ptr(ssl.cast_mut()) };
     let line = unsafe { CStr::from_ptr(line).to_string_lossy() };
 
     let callback = ssl
@@ -560,7 +625,7 @@ pub(super) unsafe extern "C" fn raw_info_callback<F>(
 {
     // Due to FFI signature requirements we have to pass a *const SSL into this function, but
     // foreign-types requires a *mut SSL to get the Rust SslRef
-    let mut_ref = ssl as *mut ffi::SSL;
+    let mut_ref = ssl.cast_mut();
 
     // SAFETY: boring provides valid inputs.
     let ssl = unsafe { SslRef::from_ptr(mut_ref) };
@@ -702,14 +767,10 @@ impl<'a> CryptoBufferBuilder<'a> {
         let buffer_capacity = unsafe { ffi::CRYPTO_BUFFER_len(self.buffer) };
         if self.cursor.position() != buffer_capacity as u64 {
             // Make sure all bytes in buffer initialized as required by Boring SSL.
-            return Err(ErrorStack::get());
+            return Err(ErrorStack::internal_error_str("invalid len"));
         }
-        unsafe {
-            let mut result = ptr::null_mut();
-            ptr::swap(&mut self.buffer, &mut result);
-            std::mem::forget(self);
-            Ok(result)
-        }
+        // Drop is no-op if the buffer is null
+        Ok(mem::replace(&mut self.buffer, ptr::null_mut()))
     }
 }
 

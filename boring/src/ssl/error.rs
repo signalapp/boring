@@ -79,6 +79,7 @@ impl ErrorCode {
     }
 
     #[corresponds(SSL_error_description)]
+    #[must_use]
     pub fn description(self) -> Option<&'static str> {
         unsafe {
             let msg = ffi::SSL_error_description(self.0);
@@ -249,8 +250,7 @@ fn fmt_mid_handshake_error(
     f: &mut fmt::Formatter,
     prefix: &str,
 ) -> fmt::Result {
-    #[cfg(feature = "rpk")]
-    if s.ssl().ssl_context().is_rpk() {
+    if !s.ssl().ssl_context().has_x509_support() {
         write!(f, "{}", prefix)?;
         return write!(f, " {}", s.error());
     }

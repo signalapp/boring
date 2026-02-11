@@ -31,7 +31,7 @@
 //!    builder.sign(&pkey, MessageDigest::sha256())?;
 //!
 //!    let mut store_builder = X509StoreBuilder::new()?;
-//!    store_builder.add_cert(issuer)?;
+//!    store_builder.add_cert(&issuer)?;
 //!    store_builder.add_crl(builder.build())?;
 //!    store_builder
 //!        .param_mut()
