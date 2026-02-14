@@ -8,10 +8,12 @@ on:
   push:
     branches:
       - main
-      - v4.x
+
 env:
   RUSTFLAGS: -Dwarnings
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   rustfmt:
@@ -27,44 +29,41 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
       - name: Install Rust
-        run: rustup update --no-self-update stable && rustup default stable && rustup component add clippy
+        run: rustup toolchain add stable --no-self-update --component clippy && rustup default stable
       - name: Get rust version
         id: rust-version
+        shell: bash
         run: |
           echo "version=$(rustc --version)" >> $GITHUB_OUTPUT
       - name: Cache cargo index
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry/index
-          key: index-${{ runner.os }}-${{ github.run_number }}
-          restore-keys: |
-            index-${{ runner.os }}-
-      - name: Create lockfile
-        run: cargo generate-lockfile
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry/cache
-          key: registry-${{ runner.os }}-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          path: |
+            .cache/cargo/registry/index
+            .cache/cargo/registry/cache
+          key: index-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.toml') }}
+          enableCrossOsArchive: true
       - name: Fetch dependencies
         run: cargo fetch
       - name: Cache target directory
         uses: actions/cache@v4
         with:
           path: target
-          key: clippy-target-${{ runner.os }}-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          key: clippy-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
       - name: Run clippy
-        run: cargo clippy --all --all-targets
+        run: cargo clippy --all --all-targets --features rpk,mlkem
       - name: Check docs
-        run: cargo doc --no-deps -p boring -p boring-sys --features rpk,pq-experimental,underscore-wildcards
+        run: cargo doc --no-deps -p boring -p boring-sys -p hyper-boring -p tokio-boring --features rpk,underscore-wildcards
         env:
           CARGO_BUILD_RUSTDOCFLAGS: "--cfg=docsrs"
-          RUST_BOOTSTRAP: 1
+          RUSTC_BOOTSTRAP: 1
           DOCS_RS: 1
       - name: Cargo.toml boring versions consistency
         shell: bash
@@ -82,6 +81,7 @@ jobs:
       matrix:
         thing:
         - stable
+        - i686-mingw
         - arm-android
         - arm64-android
         - i686-android
@@ -121,6 +121,8 @@ jobs:
           rust: stable
           os: ubuntu-latest
           check_only: true
+          custom_env:
+            CXXFLAGS: -msse2
         - thing: x86_64-android
           target: x86_64-linux-android
           rust: stable
@@ -151,6 +153,8 @@ jobs:
           rust: stable
           os: ubuntu-latest
           apt_packages: gcc-multilib g++-multilib
+          custom_env:
+            CXXFLAGS: -msse2
         - thing: arm-linux
           target: arm-unknown-linux-gnueabi
           rust: stable
@@ -191,29 +195,64 @@ jobs:
             C_INCLUDE_PATH: "C:\\msys64\\usr\\include"
             CPLUS_INCLUDE_PATH: "C:\\msys64\\usr\\include"
             LIBRARY_PATH: "C:\\msys64\\usr\\lib"
+            RUSTC_BOOTSTRAP: 1 # for -Z checksum-freshness
           # CI's Windows doesn't have required root certs
-          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring
+          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring -Z checksum-freshness
+        - thing: i686-mingw
+          target: i686-pc-windows-gnu
+          rust: stable
+          os: windows-latest
+          check_only: true
+          custom_env:
+            RUSTC_BOOTSTRAP: 1 # for -Z checksum-freshness
+            CMAKE_GENERATOR: "MinGW Makefiles"
+            COLLECT_GCC: null
+          # CI's Windows doesn't have required root certs
+          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring -Z checksum-freshness
         - thing: i686-msvc
           target: i686-pc-windows-msvc
           rust: stable-x86_64-msvc
           os: windows-latest
+          custom_env:
+            RUSTC_BOOTSTRAP: 1 # for -Z checksum-freshness
+            CXXFLAGS: -msse2
           # CI's Windows doesn't have required root certs
-          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring
+          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring -Z checksum-freshness
         - thing: x86_64-msvc
           target: x86_64-pc-windows-msvc
           rust: stable-x86_64-msvc
           os: windows-latest
+          custom_env:
+            RUSTC_BOOTSTRAP: 1 # for -Z checksum-freshness
           # CI's Windows doesn't have required root certs
-          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring
-
+          extra_test_args: --workspace --exclude tokio-boring --exclude hyper-boring -Z checksum-freshness
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo
+      CARGO_BUILD_BUILD_DIR: ${{ github.workspace }}/.cache/build-dir
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
     - name: Install Rust (rustup)
-      run: rustup update ${{ matrix.rust }} --no-self-update && rustup default ${{ matrix.rust }}
+      run: rustup update ${{ matrix.rust }} --no-self-update && rustup default ${{ matrix.rust }} && rustup target add ${{ matrix.target }}
       shell: bash
-    - run: rustup target add ${{ matrix.target }}
+    - name: Get rust version
+      id: rust-version
+      shell: bash
+      run: |
+        echo "version=$(rustc --version)" >> $GITHUB_OUTPUT
+    - name: Prepopulate cargo index
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          .cache/cargo/registry/index
+          .cache/cargo/registry/cache
+        key: index-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.toml') }}
+        enableCrossOsArchive: true
+    - name: Install golang
+      uses: actions/setup-go@v5
+      with:
+        go-version: '>=1.22.0'
     - name: Install target-specific APT dependencies
       if: "matrix.apt_packages != ''"
       run: sudo apt update && sudo apt install -y ${{ matrix.apt_packages }}
@@ -222,6 +261,32 @@ jobs:
       if: startsWith(matrix.os, 'windows')
       run: choco install nasm
       shell: cmd
+    - name: Setup 32-bit MSYS2
+      if: matrix.thing == 'i686-mingw'
+      uses: msys2/setup-msys2@v2
+      id: msys2
+      with:
+        msystem: MINGW32
+        path-type: inherit
+        install: >-
+          mingw-w64-i686-gcc
+          mingw-w64-i686-cmake
+    - name: Setup 32-bit MSYS2 Env vars
+      if: matrix.thing == 'i686-mingw'
+      shell: bash
+      run: |
+        MSYS_ROOT='${{ steps.msys2.outputs.msys2-location }}'
+        test -d "$MSYS_ROOT\\mingw32\\bin"
+        echo >> $GITHUB_PATH "$MSYS_ROOT\\mingw32\\bin"
+        echo >> $GITHUB_PATH "$MSYS_ROOT\\usr\\bin"
+        echo >> $GITHUB_ENV CC="$MSYS_ROOT\\mingw32\\bin\\gcc"
+        echo >> $GITHUB_ENV CXX="$MSYS_ROOT\\mingw32\\bin\\g++"
+        echo >> $GITHUB_ENV AR="$MSYS_ROOT\\mingw32\\bin\\ar"
+        echo >> $GITHUB_ENV CFLAGS="-mlong-double-64 -I$MSYS_ROOT\\mingw32\\include"
+        echo >> $GITHUB_ENV CXXFLAGS="-mlong-double-64 -I$MSYS_ROOT\\mingw32\\include"
+        echo >> $GITHUB_ENV BINDGEN_EXTRA_CLANG_ARGS="-mlong-double-64 -I$MSYS_ROOT\\mingw32\\include"
+        echo >> $GITHUB_ENV LIBRARY_PATH="$MSYS_ROOT\\mingw32\\lib"
+        echo >> $GITHUB_ENV LDFLAGS="-L$MSYS_ROOT\\mingw32\\lib"
     - name: Install LLVM and Clang
       if: startsWith(matrix.os, 'windows')
       uses: KyleMayes/install-llvm-action@v1
@@ -234,12 +299,31 @@ jobs:
     - name: Set Android Linker path
       if: endsWith(matrix.thing, '-android')
       run: echo "CARGO_TARGET_$(echo ${{ matrix.target }} | tr \\-a-z _A-Z)_LINKER=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/$(echo ${{ matrix.target }} | sed s/armv7/armv7a/)21-clang++" >> "$GITHUB_ENV"
-    - name: Build tests
-      # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
-      run: cargo build --target ${{ matrix.target }} --tests ${{ matrix.extra_test_args }}
+    - name: Fetch deps
+      run: cargo fetch --target ${{ matrix.target }}
       shell: bash
       env: ${{ matrix.custom_env }}
-    - name: Run tests
+      # Windows builds are the slowest
+    - name: Cache deps in Windows tests
+      if: startsWith(matrix.os, 'windows')
+      uses: actions/cache/restore@v4
+      id: test-cache-restore
+      with:
+        path: .cache/build-dir
+        key: wintest-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+    - name: Build tests
+      # We `build` because we want the linker to verify we are cross-compiling correctly for check-only targets.
+      run: cargo build -vv --target ${{ matrix.target }} --tests ${{ matrix.extra_test_args }}
+      shell: bash
+      env: ${{ matrix.custom_env }}
+      # By default it'd be saved after later cargo calls, which already invalidated the cache
+    - name: Cache deps in Windows tests
+      if: startsWith(matrix.os, 'windows')
+      uses: actions/cache/save@v4
+      with:
+        path: .cache/build-dir
+        key: ${{ steps.test-cache-restore.outputs.cache-primary-key }}
+    - name: Run tests (skip=${{ matrix.check_only }})
       if: "!matrix.check_only"
       run: cargo test --target ${{ matrix.target }} ${{ matrix.extra_test_args }}
       shell: bash
@@ -255,7 +339,9 @@ jobs:
       #
       # Both of these may no longer be the case after updating the BoringSSL
       # submodules to a new revision, so it's important to test this on CI.
-      run: cargo publish --dry-run -p boring-sys
+      run: cargo publish --dry-run --target ${{ matrix.target }} -p boring-sys
+      shell: bash
+      env: ${{ matrix.custom_env }}
 
   test-fips:
     name: Test FIPS integration
@@ -267,18 +353,10 @@ jobs:
     - name: Install Rust (rustup)
       run: rustup update stable --no-self-update && rustup default stable
       shell: bash
-    - name: Install Clang-12
-      uses: KyleMayes/install-llvm-action@v1
-      with:
-        version: "12.0.0"
-        directory: ${{ runner.temp }}/llvm
     - name: Install golang
       uses: actions/setup-go@v5
       with:
         go-version: '>=1.22.0'
-    - name: Add clang++-12 link
-      working-directory: ${{ runner.temp }}/llvm/bin
-      run: ln -s clang clang++-12
     - name: Run tests
       run: cargo test --features fips
     - name: Test boring-sys cargo publish (FIPS)
@@ -306,8 +384,12 @@ jobs:
       with:
         submodules: 'recursive'
     - name: Install Rust (rustup)
-      run: rustup update stable --no-self-update && rustup default stable && rustup target add ${{ matrix.target }}
+      run: rustup toolchain install stable --no-self-update --profile minimal --target ${{ matrix.target }} && rustup default stable
       shell: bash
+    - name: Install golang
+      uses: actions/setup-go@v5
+      with:
+        go-version: '>=1.22.0'
     - name: Install ${{ matrix.target }} toolchain
       run: brew tap messense/macos-cross-toolchains && brew install ${{ matrix.target }}
     - name: Set BORING_BSSL_SYSROOT
@@ -315,12 +397,17 @@ jobs:
       shell: bash
     - name: Set CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER
       run: echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.target }}-gcc" >> $GITHUB_ENV
+      shell: bash
+    - name: Set CXXFLAGS
+      run: echo "CXXFLAGS=-D__STDC_FORMAT_MACROS" >> $GITHUB_ENV
     - name: Build for ${{ matrix.target }}
       run: cargo build --target ${{ matrix.target }} --all-targets
 
   test-features:
     name: Test features
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 1
     steps:
     - uses: actions/checkout@v4
       with:
@@ -328,21 +415,15 @@ jobs:
     - name: Install Rust (rustup)
       run: rustup update stable --no-self-update && rustup default stable
       shell: bash
+    - run: cargo check --no-default-features
+      name: Check `--no-default-features`
+    - run: cargo check --features mlkem,credential
+      name: Check `mlkem,credential`
     - run: cargo test --features rpk
       name: Run `rpk` tests
-    - run: cargo test --features pq-experimental
-      name: Run `pq-experimental` tests
     - run: cargo test --features underscore-wildcards
       name: Run `underscore-wildcards` tests
-    - run: cargo test --features pq-experimental,rpk
-      name: Run `pq-experimental,rpk` tests
-    - run: cargo test --features kx-safe-default,pq-experimental
-      name: Run `kx-safe-default` tests
-    - run: cargo test --features pq-experimental,underscore-wildcards
-      name: Run `pq-experimental,underscore-wildcards` tests
     - run: cargo test --features rpk,underscore-wildcards
       name: Run `rpk,underscore-wildcards` tests
-    - run: cargo test --features pq-experimental,rpk,underscore-wildcards
-      name: Run `pq-experimental,rpk,underscore-wildcards` tests
-    - run: cargo test -p hyper-boring --features hyper1
-      name: Run hyper 1.0 tests for hyper-boring
+    - run: cargo test --features rpk,underscore-wildcards,mlkem
+      name: Run `rpk,underscore-wildcards` tests

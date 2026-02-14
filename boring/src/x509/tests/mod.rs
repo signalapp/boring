@@ -84,7 +84,7 @@ fn test_subject_read_cn() {
     let cert = X509::from_pem(cert).unwrap();
     let subject = cert.subject_name();
     let cn = subject.entries_by_nid(Nid::COMMONNAME).next().unwrap();
-    assert_eq!(cn.data().as_slice(), b"foobar.com")
+    assert_eq!(cn.data().as_slice(), b"foobar.com");
 }
 
 #[test]
@@ -261,34 +261,36 @@ fn x509_builder() {
         .unwrap();
 
     let basic_constraints = BasicConstraints::new().critical().ca().build().unwrap();
-    builder.append_extension(basic_constraints).unwrap();
+    builder
+        .append_extension(basic_constraints.as_ref())
+        .unwrap();
     let key_usage = KeyUsage::new()
         .digital_signature()
         .key_encipherment()
         .build()
         .unwrap();
-    builder.append_extension(key_usage).unwrap();
+    builder.append_extension(&key_usage).unwrap();
     let ext_key_usage = ExtendedKeyUsage::new()
         .client_auth()
         .server_auth()
         .other("2.999.1")
         .build()
         .unwrap();
-    builder.append_extension(ext_key_usage).unwrap();
+    builder.append_extension(&ext_key_usage).unwrap();
     let subject_key_identifier = SubjectKeyIdentifier::new()
         .build(&builder.x509v3_context(None, None))
         .unwrap();
-    builder.append_extension(subject_key_identifier).unwrap();
+    builder.append_extension(&subject_key_identifier).unwrap();
     let authority_key_identifier = AuthorityKeyIdentifier::new()
         .keyid(true)
         .build(&builder.x509v3_context(None, None))
         .unwrap();
-    builder.append_extension(authority_key_identifier).unwrap();
+    builder.append_extension(&authority_key_identifier).unwrap();
     let subject_alternative_name = SubjectAlternativeName::new()
         .dns("example.com")
         .build(&builder.x509v3_context(None, None))
         .unwrap();
-    builder.append_extension(subject_alternative_name).unwrap();
+    builder.append_extension(&subject_alternative_name).unwrap();
 
     builder.sign(&pkey, MessageDigest::sha256()).unwrap();
 
@@ -503,7 +505,7 @@ fn test_verify_cert() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     let store = store_bldr.build();
     let empty_store = X509StoreBuilder::new().unwrap().build();
 
@@ -536,7 +538,7 @@ fn test_verify_fails() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     let store = store_bldr.build();
 
     let mut context = X509StoreContext::new().unwrap();
@@ -556,7 +558,7 @@ fn test_verify_revoked() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr.add_crl(crl).unwrap();
     store_bldr
         .param_mut()
@@ -592,7 +594,7 @@ fn test_untrusted_valid_crl() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr
         .param_mut()
         .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
@@ -612,11 +614,13 @@ fn test_untrusted_valid_crl() {
     let crl = include_bytes!("../../../test/crl.pem");
     let crl = X509CRL::from_pem(crl).unwrap();
     let mut context = X509StoreContext::new().unwrap();
-    assert!(!context
-        .init(&store, &cert, &chain, |c| c
-            .verify_cert_with_crls(stack_of(crl)))
-        .unwrap());
-    assert_eq!(context.verify_result(), Err(X509VerifyError::CERT_REVOKED));
+    context
+        .init(&store, &cert, &chain, |c| {
+            assert!(!c.verify_cert_with_crls(stack_of(crl)).unwrap());
+            assert_eq!(c.verify_result(), Err(X509VerifyError::CERT_REVOKED));
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
@@ -628,7 +632,7 @@ fn test_untrusted_invalid_crl() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr
         .param_mut()
         .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
@@ -639,27 +643,28 @@ fn test_untrusted_invalid_crl() {
     let crl = include_bytes!("../../../test/invalid_crl.pem");
     let crl = X509CRL::from_pem(crl).unwrap();
     let mut context = X509StoreContext::new().unwrap();
-    assert!(!context
-        .init(&store, &cert, &chain, |c| c
-            .verify_cert_with_crls(stack_of(crl)))
-        .unwrap());
-    assert_eq!(
-        context.verify_result(),
-        Err(X509VerifyError::UNABLE_TO_GET_CRL)
-    );
+    context
+        .init(&store, &cert, &chain, |c| {
+            assert!(!c.verify_cert_with_crls(stack_of(crl)).unwrap());
+            assert_eq!(c.verify_result(), Err(X509VerifyError::UNABLE_TO_GET_CRL));
+            Ok(())
+        })
+        .unwrap();
 
     // this CRL has an invalid signature
     let crl = include_bytes!("../../../test/bad_sig.pem");
     let crl = X509CRL::from_pem(crl).unwrap();
     let mut context = X509StoreContext::new().unwrap();
-    assert!(!context
-        .init(&store, &cert, &chain, |c| c
-            .verify_cert_with_crls(stack_of(crl)))
-        .unwrap());
-    assert_eq!(
-        context.verify_result(),
-        Err(X509VerifyError::CRL_SIGNATURE_FAILURE)
-    );
+    context
+        .init(&store, &cert, &chain, |c| {
+            assert!(!c.verify_cert_with_crls(stack_of(crl)).unwrap());
+            assert_eq!(
+                c.verify_result(),
+                Err(X509VerifyError::CRL_SIGNATURE_FAILURE)
+            );
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
@@ -741,7 +746,7 @@ fn test_custom_time_valid() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr.param_mut().set_time(1656633600); // 2022-07-01, everything is valid
     let store = store_bldr.build();
 
@@ -760,7 +765,7 @@ fn test_custom_time_expired() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr.param_mut().set_time(1786838400); // 2026-08-16, after the root and leaf expiration
     let store = store_bldr.build();
 
@@ -779,7 +784,7 @@ fn test_custom_time_too_soon() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr.param_mut().set_time(1262304000); // 2010-01-01, before the root and leaf issuance
     let store = store_bldr.build();
 
@@ -800,7 +805,7 @@ fn test_custom_time_crl() {
     let chain = Stack::new().unwrap();
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
-    store_bldr.add_cert(ca).unwrap();
+    store_bldr.add_cert(&ca).unwrap();
     store_bldr
         .param_mut()
         .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);

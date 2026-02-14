@@ -8,7 +8,8 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "4.21.1"
+version = "5.0.1"
+rust-version = "1.85"
 repository = "https://github.com/cloudflare/boring"
 edition = "2021"
 
@@ -19,9 +20,9 @@ tag-prefix = ""
 publish = false
 
 [workspace.dependencies]
-boring-sys = { version = "4.21.1", path = "./boring-sys" }
-boring = { version = "4.21.1", path = "./boring" }
-tokio-boring = { version = "4.21.1", path = "./tokio-boring" }
+boring-sys = { version = "5.0.1", path = "./boring-sys", default-features = false }
+boring = { version = "5.0.1", path = "./boring", default-features = false }
+tokio-boring = { version = "5.0.1", path = "./tokio-boring", default-features = false }
 
 bindgen = { version = "0.72.0", default-features = false, features = ["runtime"] }
 bitflags = "2.9"
@@ -40,10 +41,8 @@ anyhow = "1"
 antidote = "1.0.0"
 http = "1"
 http-body-util = "0.1.2"
-http_old = { package = "http", version = "0.2" }
 hyper = "1"
 hyper-util = "0.1.6"
-hyper_old = { package = "hyper", version = "0.14", default-features = false }
 linked_hash_set = "0.1"
 openssl-macros = "0.1.1"
 tower = "0.4"
