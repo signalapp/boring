@@ -1,4 +1,3 @@
-#![allow(deprecated)] // SslCurve
 use foreign_types::{ForeignType, ForeignTypeRef};
 use std::io;
 use std::io::prelude::*;
@@ -13,27 +12,25 @@ use crate::hash::MessageDigest;
 use crate::pkey::PKey;
 use crate::srtp::SrtpProfileId;
 use crate::ssl::test::server::Server;
-use crate::ssl::SslVersion;
-use crate::ssl::{self, SslCurve};
 use crate::ssl::{
-    ExtensionType, ShutdownResult, ShutdownState, Ssl, SslAcceptor, SslAcceptorBuilder,
+    self, ExtensionType, ShutdownResult, ShutdownState, Ssl, SslAcceptor, SslAcceptorBuilder,
     SslConnector, SslContext, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode,
 };
+use crate::ssl::{HandshakeError, SslVersion};
 use crate::x509::store::X509StoreBuilder;
 use crate::x509::verify::X509CheckFlags;
 use crate::x509::{X509Name, X509};
 
-#[cfg(not(feature = "fips"))]
 use super::CompliancePolicy;
 
 mod cert_compressor;
 mod cert_verify;
 mod custom_verify;
-#[cfg(not(feature = "fips"))]
 mod ech;
 mod private_key_method;
 mod server;
 mod session;
+mod session_resumption;
 mod verify;
 
 static ROOT_CERT: &[u8] = include_bytes!("../../../test/root-ca.pem");
@@ -330,8 +327,8 @@ fn test_mutable_store() {
     assert_eq!(1, ctx.cert_store().objects_len());
 
     let mut new_store = X509StoreBuilder::new().unwrap();
-    new_store.add_cert(cert).unwrap();
-    new_store.add_cert(cert2).unwrap();
+    new_store.add_cert(&cert).unwrap();
+    new_store.add_cert(&cert2).unwrap();
     let new_store = new_store.build();
     assert_eq!(2, new_store.objects_len());
 
@@ -418,6 +415,68 @@ fn test_select_cert_alpn_extension() {
         alpn_extension.lock().unwrap().as_deref(),
         Some(&b"\x00\x07\x06http/2"[..]),
     );
+}
+
+#[test]
+fn test_io_retry() {
+    #[derive(Debug)]
+    struct RetryStream {
+        inner: TcpStream,
+        first_read: bool,
+        first_write: bool,
+        first_flush: bool,
+    }
+
+    impl Read for RetryStream {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if mem::replace(&mut self.first_read, false) {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "first read"))
+            } else {
+                self.inner.read(buf)
+            }
+        }
+    }
+
+    impl Write for RetryStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if mem::replace(&mut self.first_write, false) {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "first write"))
+            } else {
+                self.inner.write(buf)
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if mem::replace(&mut self.first_flush, false) {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "first flush"))
+            } else {
+                self.inner.flush()
+            }
+        }
+    }
+
+    let server = Server::builder().build();
+
+    let stream = RetryStream {
+        inner: server.connect_tcp(),
+        first_read: true,
+        first_write: true,
+        first_flush: true,
+    };
+
+    let ctx = SslContext::builder(SslMethod::tls()).unwrap();
+    let mut s = match Ssl::new(&ctx.build()).unwrap().connect(stream) {
+        Ok(mut s) => return s.read_exact(&mut [0]).unwrap(),
+        Err(HandshakeError::WouldBlock(s)) => s,
+        Err(_) => panic!("should not fail on setup"),
+    };
+    loop {
+        match s.handshake() {
+            Ok(mut s) => return s.read_exact(&mut [0]).unwrap(),
+            Err(HandshakeError::WouldBlock(mid_s)) => s = mid_s,
+            Err(_) => panic!("should not fail on handshake"),
+        }
+    }
 }
 
 #[test]
@@ -955,59 +1014,15 @@ fn sni_callback_swapped_ctx() {
     assert!(CALLED_BACK.load(Ordering::SeqCst));
 }
 
-#[cfg(feature = "kx-safe-default")]
-#[test]
-fn client_set_default_curves_list() {
-    let ssl_ctx = crate::ssl::SslContextBuilder::new(SslMethod::tls())
-        .unwrap()
-        .build();
-    let mut ssl = Ssl::new(&ssl_ctx).unwrap();
-
-    // Panics if Kyber768 missing in boringSSL.
-    ssl.client_set_default_curves_list();
-}
-
-#[cfg(feature = "kx-safe-default")]
-#[test]
-fn server_set_default_curves_list() {
-    let ssl_ctx = crate::ssl::SslContextBuilder::new(SslMethod::tls())
-        .unwrap()
-        .build();
-    let mut ssl = Ssl::new(&ssl_ctx).unwrap();
-
-    // Panics if Kyber768 missing in boringSSL.
-    ssl.server_set_default_curves_list();
-}
-
 #[test]
 fn get_curve() {
     let server = Server::builder().build();
     let client = server.client_with_root_ca();
     let client_stream = client.connect();
-    let curve = client_stream.ssl().curve().expect("curve");
-    assert!(curve.name().is_some());
-}
-
-#[test]
-fn get_curve_name() {
-    assert_eq!(SslCurve::SECP224R1.name(), Some("P-224"));
-    assert_eq!(SslCurve::SECP256R1.name(), Some("P-256"));
-    assert_eq!(SslCurve::SECP384R1.name(), Some("P-384"));
-    assert_eq!(SslCurve::SECP521R1.name(), Some("P-521"));
-    assert_eq!(SslCurve::X25519.name(), Some("X25519"));
-}
-
-#[cfg(not(feature = "kx-safe-default"))]
-#[test]
-fn set_curves() {
-    let mut ctx = SslContext::builder(SslMethod::tls()).unwrap();
-    ctx.set_curves(&[
-        SslCurve::SECP224R1,
-        SslCurve::SECP256R1,
-        SslCurve::SECP384R1,
-        SslCurve::X25519,
-    ])
-    .expect("Failed to set curves");
+    let curve = client_stream.ssl().curve();
+    assert!(curve.is_some());
+    let curve_name = client_stream.ssl().curve_name();
+    assert!(curve_name.is_some());
 }
 
 #[test]
@@ -1038,7 +1053,6 @@ fn test_get_ciphers() {
 }
 
 #[test]
-#[cfg(not(feature = "fips"))]
 fn test_set_compliance() {
     let mut ctx = SslContext::builder(SslMethod::tls()).unwrap();
     ctx.set_compliance_policy(CompliancePolicy::FIPS_202205)
@@ -1058,7 +1072,7 @@ fn test_set_compliance() {
     assert_eq!(ciphers.len(), FIPS_CIPHERS.len());
 
     for cipher in ciphers.into_iter().zip(FIPS_CIPHERS) {
-        assert_eq!(cipher.0.name(), cipher.1)
+        assert_eq!(cipher.0.name(), cipher.1);
     }
 
     let mut ctx = SslContext::builder(SslMethod::tls()).unwrap();
@@ -1077,7 +1091,7 @@ fn test_set_compliance() {
     assert_eq!(ciphers.len(), WPA3_192_CIPHERS.len());
 
     for cipher in ciphers.into_iter().zip(WPA3_192_CIPHERS) {
-        assert_eq!(cipher.0.name(), cipher.1)
+        assert_eq!(cipher.0.name(), cipher.1);
     }
 
     ctx.set_compliance_policy(CompliancePolicy::NONE)
@@ -1119,7 +1133,6 @@ fn test_info_callback() {
     assert!(CALLED_BACK.load(Ordering::Relaxed));
 }
 
-#[cfg(not(feature = "fips-compat"))]
 #[test]
 fn test_ssl_set_compliance() {
     let ctx = SslContext::builder(SslMethod::tls()).unwrap().build();
@@ -1141,7 +1154,7 @@ fn test_ssl_set_compliance() {
     assert_eq!(ciphers.len(), FIPS_CIPHERS.len());
 
     for cipher in ciphers.into_iter().zip(FIPS_CIPHERS) {
-        assert_eq!(cipher.0.name(), cipher.1)
+        assert_eq!(cipher.0.name(), cipher.1);
     }
 
     let ctx = SslContext::builder(SslMethod::tls()).unwrap().build();
@@ -1161,7 +1174,7 @@ fn test_ssl_set_compliance() {
     assert_eq!(ciphers.len(), WPA3_192_CIPHERS.len());
 
     for cipher in ciphers.into_iter().zip(WPA3_192_CIPHERS) {
-        assert_eq!(cipher.0.name(), cipher.1)
+        assert_eq!(cipher.0.name(), cipher.1);
     }
 
     ssl.set_compliance_policy(CompliancePolicy::NONE)
@@ -1169,7 +1182,6 @@ fn test_ssl_set_compliance() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn ex_data_drop() {
     use crate::ssl::SslContextBuilder;
     use std::sync::atomic::AtomicU32;
@@ -1208,6 +1220,6 @@ fn ex_data_drop() {
     ctx2.set_ex_data(index, TrackDrop(d1.clone()));
     ctx2.set_ex_data(index, TrackDrop(d2.clone()));
     drop(ctx2);
-    assert_eq!(101, d1.load(Relaxed), "set_ex_data has a leak");
+    assert_eq!(102, d1.load(Relaxed));
     assert_eq!(202, d2.load(Relaxed));
 }
