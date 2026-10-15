@@ -598,7 +598,7 @@ fn test_untrusted_valid_crl() {
     store_bldr
         .param_mut()
         .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
-    store_bldr.param_mut().set_time(1656633600); // 2022-07-01, everything is valid
+    store_bldr.param_mut().set_time(1798761600); // 2027-01-01, everything is valid
     let store = store_bldr.build();
 
     // cert is not revoked
@@ -636,7 +636,7 @@ fn test_untrusted_invalid_crl() {
     store_bldr
         .param_mut()
         .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
-    store_bldr.param_mut().set_time(1656633600); // 2022-07-01, everything is valid
+    store_bldr.param_mut().set_time(1798761600); // 2027-01-01, everything is valid
     let store = store_bldr.build();
 
     // this CRL was issued by a different CA (not in the trusted store)
@@ -729,9 +729,9 @@ fn test_debug_crl() {
     assert!(debugged.contains(r#"countryName = "AU""#));
     assert!(debugged.contains(r#"stateOrProvinceName = "Some-State""#));
     assert!(debugged.contains(r#"organizationName = "Internet Widgits Pty Ltd""#));
-    assert!(debugged.contains(r#"last_update: Jun 21 20:22:02 2022 GMT"#));
-    assert!(debugged.contains(r#"next_update: Jun 18 20:22:02 2032 GMT"#));
-    assert!(debugged.contains(r#"revocation_date: Jun 21 20:21:55 2022 GMT"#));
+    assert!(debugged.contains(r#"last_update: Oct 15 00:00:00 2026 GMT"#));
+    assert!(debugged.contains(r#"next_update: Oct 12 00:00:00 2036 GMT"#));
+    assert!(debugged.contains(r#"revocation_date: Oct 15 00:00:00 2026 GMT"#));
     assert!(debugged.contains(r#"serial_number: "8771f7bdee982fa5""#));
     assert!(debugged.contains(r#"object_nid: X509v3 Authority Key Identifier"#));
     assert!(debugged.contains(r#"object_nid: X509v3 CRL Number"#));
@@ -747,7 +747,7 @@ fn test_custom_time_valid() {
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
     store_bldr.add_cert(&ca).unwrap();
-    store_bldr.param_mut().set_time(1656633600); // 2022-07-01, everything is valid
+    store_bldr.param_mut().set_time(1798761600); // 2027-01-01, everything is valid
     let store = store_bldr.build();
 
     let mut context = X509StoreContext::new().unwrap();
@@ -766,7 +766,7 @@ fn test_custom_time_expired() {
 
     let mut store_bldr = X509StoreBuilder::new().unwrap();
     store_bldr.add_cert(&ca).unwrap();
-    store_bldr.param_mut().set_time(1786838400); // 2026-08-16, after the root and leaf expiration
+    store_bldr.param_mut().set_time(2114380800); // 2037-01-01, after the root and leaf expiration
     let store = store_bldr.build();
 
     let mut context = X509StoreContext::new().unwrap();
@@ -809,14 +809,17 @@ fn test_custom_time_crl() {
     store_bldr
         .param_mut()
         .set_flags(X509VerifyFlags::CRL_CHECK | X509VerifyFlags::CRL_CHECK_ALL);
-    store_bldr.param_mut().set_time(1640995200); // 2022-01-01, before the CRL's issue date
+    store_bldr.param_mut().set_time(1788220800); // 2026-09-01, certs are valid but the CRL is not yet issued
     let store = store_bldr.build();
 
     let mut context = X509StoreContext::new().unwrap();
-    assert!(!context
-        .init(&store, &cert, &chain, |c| c
-            .verify_cert_with_crls(stack_of(crl)))
-        .unwrap());
+    context
+        .init(&store, &cert, &chain, |c| {
+            assert!(!c.verify_cert_with_crls(stack_of(crl)).unwrap());
+            assert_eq!(c.verify_result(), Err(X509VerifyError::CRL_NOT_YET_VALID));
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
