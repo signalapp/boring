@@ -493,7 +493,7 @@ fn ensure_patches_applied(config: &Config) -> io::Result<()> {
 
     if config.features.allow_crl_extensions_bad_version {
         println!(
-            "cargo:warning=applying the patch for disabling cert version \
+            "cargo:warning=applying the patch for disabling CRL version \
             validation for extensions"
         );
         apply_patch(config, "bad-cert-verification.patch")?;

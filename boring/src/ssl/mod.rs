@@ -104,7 +104,8 @@ use crate::{ffi, free_data_box};
 pub use self::async_callbacks::{
     AsyncPrivateKeyMethod, AsyncPrivateKeyMethodError, AsyncSelectCertError, BoxCustomVerifyFinish,
     BoxCustomVerifyFuture, BoxGetSessionFinish, BoxGetSessionFuture, BoxPrivateKeyMethodFinish,
-    BoxPrivateKeyMethodFuture, BoxSelectCertFinish, BoxSelectCertFuture, ExDataFuture,
+    BoxPrivateKeyMethodFuture, BoxSelectCertActionFinish, BoxSelectCertActionFuture,
+    BoxSelectCertFinish, BoxSelectCertFuture, ExDataFuture,
 };
 pub use self::connector::{
     ConnectConfiguration, SslAcceptor, SslAcceptorBuilder, SslConnector, SslConnectorBuilder,
@@ -331,6 +332,18 @@ impl SslMethod {
     #[must_use]
     pub fn as_ptr(&self) -> *const ffi::SSL_METHOD {
         self.ptr
+    }
+
+    #[doc(hidden)]
+    #[deprecated(note = "renamed to `tls()`")]
+    pub fn tls_server() -> Self {
+        Self::tls()
+    }
+
+    #[doc(hidden)]
+    #[deprecated(note = "renamed to `tls()`")]
+    pub fn tls_client() -> Self {
+        Self::tls()
     }
 }
 
@@ -563,6 +576,22 @@ impl SelectCertError {
 
     /// The operation could not be completed and should be retried later.
     pub const RETRY: Self = Self(ffi::ssl_select_cert_result_t::ssl_select_cert_retry);
+}
+
+/// An action returned from a certificate selection callback.
+#[non_exhaustive]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum SelectCertAction {
+    /// Complete certificate selection normally.
+    Success,
+    /// Discard ClientHelloInner and continue with ClientHelloOuter.
+    ///
+    /// BoringSSL calls the callback again with ClientHelloOuter and continues the handshake
+    /// without retry configs. This action is only valid when [`SslRef::ech_accepted`] is true;
+    /// otherwise the handshake fails.
+    /// Changes made to the connection while processing ClientHelloInner carry over to the outer
+    /// ClientHello.
+    DisableEch,
 }
 
 /// Extension types, to be used with `ClientHello::get_extension`.
@@ -1689,10 +1718,39 @@ impl SslContextBuilder {
     /// Sets a callback that is called before most ClientHello processing and before the decision whether
     /// to resume a session is made. The callback may inspect the ClientHello and configure the
     /// connection.
+    ///
+    /// A context has a single certificate selection callback. Calling this method replaces the
+    /// callback set by any of [`SslContextBuilder::set_select_certificate_callback`],
+    /// [`SslContextBuilder::set_select_certificate_callback_with_action`],
+    /// [`SslContextBuilder::set_async_select_certificate_callback`], or
+    /// [`SslContextBuilder::set_async_select_certificate_callback_with_action`].
     #[corresponds(SSL_CTX_set_select_certificate_cb)]
     pub fn set_select_certificate_callback<F>(&mut self, callback: F)
     where
         F: Fn(ClientHello<'_>) -> Result<(), SelectCertError> + Sync + Send + 'static,
+    {
+        self.set_select_certificate_callback_with_action(move |client_hello| {
+            callback(client_hello).map(|()| SelectCertAction::Success)
+        });
+    }
+
+    /// Sets an action-aware callback that is called before most ClientHello processing and before
+    /// the decision whether to resume a session is made. The callback may inspect the ClientHello
+    /// and configure the connection.
+    ///
+    /// [`SelectCertAction::DisableEch`] causes BoringSSL to discard an inner ClientHello, call
+    /// this callback again with the outer ClientHello, and continue without retry configs.
+    /// It is only valid when ECH has been accepted; returning it otherwise fails the handshake.
+    ///
+    /// A context has a single certificate selection callback. Calling this method replaces the
+    /// callback set by any of [`SslContextBuilder::set_select_certificate_callback`],
+    /// [`SslContextBuilder::set_select_certificate_callback_with_action`],
+    /// [`SslContextBuilder::set_async_select_certificate_callback`], or
+    /// [`SslContextBuilder::set_async_select_certificate_callback_with_action`].
+    #[corresponds(SSL_CTX_set_select_certificate_cb)]
+    pub fn set_select_certificate_callback_with_action<F>(&mut self, callback: F)
+    where
+        F: Fn(ClientHello<'_>) -> Result<SelectCertAction, SelectCertError> + Sync + Send + 'static,
     {
         unsafe {
             self.replace_ex_data(SslContext::cached_ex_index::<F>(), callback);
@@ -2126,7 +2184,7 @@ impl SslContextBuilder {
         unsafe {
             cvt_0i(ffi::SSL_CTX_set1_accepted_peer_cert_types(
                 self.as_ptr(),
-                types.as_ptr() as *const u8,
+                types.as_ptr().cast::<u8>(),
                 types.len(),
             ))
             .map(|_| ())
@@ -2434,7 +2492,7 @@ impl SslContextRef {
             }
 
             Some(slice::from_raw_parts(
-                types as *const CertificateType,
+                types.cast::<CertificateType>(),
                 types_len,
             ))
         }
@@ -3024,6 +3082,7 @@ impl SslRef {
     }
 
     /// Returns whether the TLS 1.3 HelloRetryRequest was used
+    #[must_use]
     pub fn used_hello_retry_request(&self) -> bool {
         unsafe { ffi::SSL_used_hello_retry_request(self.as_ptr()) == 1 }
     }
@@ -3956,6 +4015,7 @@ impl SslRef {
     /// Returns the public key sent by the other peer, `None` if there is no ongoing handshake.
     #[corresponds(SSL_get0_peer_pubkey)]
     #[cfg(feature = "rpk")]
+    #[must_use]
     pub fn peer_pubkey(&self) -> Option<&PKeyRef<Public>> {
         unsafe {
             let pubkey = ffi::SSL_get0_peer_pubkey(self.as_ptr());
@@ -3964,7 +4024,7 @@ impl SslRef {
                 return None;
             }
 
-            Some(PKeyRef::from_ptr(pubkey as *mut _))
+            Some(PKeyRef::from_ptr(pubkey.cast_mut()))
         }
     }
 
@@ -3987,7 +4047,7 @@ impl SslRef {
         unsafe {
             cvt_0i(ffi::SSL_set1_accepted_peer_cert_types(
                 self.as_ptr(),
-                types.as_ptr() as *const u8,
+                types.as_ptr().cast::<u8>(),
                 types.len(),
             ))
             .map(|_| ())
@@ -4016,7 +4076,7 @@ impl SslRef {
             }
 
             Some(slice::from_raw_parts(
-                types as *const CertificateType,
+                types.cast::<CertificateType>(),
                 types_len,
             ))
         }
