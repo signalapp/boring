@@ -786,7 +786,8 @@ fn generate_bindings(config: &Config) -> Result<PathBuf, Box<dyn std::error::Err
         .opaque_type("FILE")
         .clang_args(get_extra_clang_args_for_bindgen(config))
         .clang_arg("-I")
-        .clang_arg(include_path.display().to_string());
+        .clang_arg(include_path.display().to_string())
+        .formatter(bindgen::Formatter::Prettyplease);
 
     if let Some(sysroot) = &config.env.sysroot {
         builder = builder

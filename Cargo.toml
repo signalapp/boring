@@ -24,7 +24,7 @@ boring-sys = { version = "5.3.0", path = "./boring-sys", default-features = fals
 boring = { version = "5.3.0", path = "./boring", default-features = false }
 tokio-boring = { version = "5.3.0", path = "./tokio-boring", default-features = false }
 
-bindgen = { version = "0.72.0", default-features = false, features = ["runtime"] }
+bindgen = { version = "0.72.0", default-features = false, features = ["runtime", "prettyplease"] }
 bitflags = "2.9"
 brotli = "8.0"
 bytes = "1"
