@@ -2,9 +2,9 @@
 
 use super::{
     AlpnError, CertificateCompressor, ClientHello, GetSessionPendingError, PrivateKeyMethod,
-    PrivateKeyMethodError, SelectCertError, SniError, Ssl, SslAlert, SslContext, SslContextRef,
-    SslInfoCallbackAlert, SslInfoCallbackMode, SslInfoCallbackValue, SslRef, SslSession,
-    SslSessionRef, SslSignatureAlgorithm, SslVerifyError, SESSION_CTX_INDEX,
+    PrivateKeyMethodError, SelectCertAction, SelectCertError, SniError, Ssl, SslAlert, SslContext,
+    SslContextRef, SslInfoCallbackAlert, SslInfoCallbackMode, SslInfoCallbackValue, SslRef,
+    SslSession, SslSessionRef, SslSignatureAlgorithm, SslVerifyError, SESSION_CTX_INDEX,
 };
 use crate::error::ErrorStack;
 use crate::ffi;
@@ -41,7 +41,7 @@ where
 
     // SAFETY: The callback won't outlive the context it's associated with
     // because there is no `X509StoreContextRef::ssl_mut(&mut self)` method.
-    let verify = unsafe { &*std::ptr::from_ref::<F>(verify) };
+    let verify = unsafe { &*ptr::from_ref::<F>(verify) };
 
     c_int::from(verify(preverify_ok != 0, ctx))
 }
@@ -90,7 +90,7 @@ where
     // SAFETY: The callback won't outlive the context it's associated with
     // because there is no way to get a mutable reference to the `SslContext`,
     // so the callback can't replace itself.
-    let verify = unsafe { &*std::ptr::from_ref::<F>(verify) };
+    let verify = unsafe { &*ptr::from_ref::<F>(verify) };
 
     c_int::from(verify(ctx))
 }
@@ -371,10 +371,11 @@ pub(super) unsafe extern "C" fn raw_select_cert<F>(
     client_hello: *const ffi::SSL_CLIENT_HELLO,
 ) -> ffi::ssl_select_cert_result_t
 where
-    F: Fn(ClientHello<'_>) -> Result<(), SelectCertError> + Sync + Send + 'static,
+    F: Fn(ClientHello<'_>) -> Result<SelectCertAction, SelectCertError> + Sync + Send + 'static,
 {
     // SAFETY: boring provides valid inputs.
     let client_hello = ClientHello(unsafe { &*client_hello });
+    let ech_accepted = client_hello.ssl().ech_accepted();
 
     let ssl_context = client_hello.ssl().ssl_context().to_owned();
     let callback = ssl_context
@@ -382,7 +383,11 @@ where
         .expect("BUG: select cert callback missing");
 
     match callback(client_hello) {
-        Ok(()) => ffi::ssl_select_cert_result_t::ssl_select_cert_success,
+        Ok(SelectCertAction::Success) => ffi::ssl_select_cert_result_t::ssl_select_cert_success,
+        Ok(SelectCertAction::DisableEch) if ech_accepted => {
+            ffi::ssl_select_cert_result_t::ssl_select_cert_disable_ech
+        }
+        Ok(SelectCertAction::DisableEch) => ffi::ssl_select_cert_result_t::ssl_select_cert_error,
         Err(e) => e.0,
     }
 }
@@ -442,7 +447,7 @@ where
     // SAFETY: We can make `callback` outlive `ssl` because it is a callback
     // stored in the session context set in `Ssl::new` so it is always
     // guaranteed to outlive the lifetime of this function's scope.
-    let callback = unsafe { &*std::ptr::from_ref::<F>(callback) };
+    let callback = unsafe { &*ptr::from_ref::<F>(callback) };
 
     callback(ssl, session);
 
@@ -495,7 +500,7 @@ where
     // SAFETY: We can make `callback` outlive `ssl` because it is a callback
     // stored in the session context set in `Ssl::new` so it is always
     // guaranteed to outlive the lifetime of this function's scope.
-    let callback = unsafe { &*std::ptr::from_ref::<F>(callback) };
+    let callback = unsafe { &*ptr::from_ref::<F>(callback) };
 
     match callback(ssl, data) {
         Ok(Some(session)) => {
@@ -666,7 +671,7 @@ where
         .ex_data(SslContext::cached_ex_index::<C>())
         .expect("BUG: certificate compression missed");
 
-    let input_slice = unsafe { std::slice::from_raw_parts(input, input_len) };
+    let input_slice = unsafe { slice::from_raw_parts(input, input_len) };
     let mut writer = CryptoByteBuilder::from_ptr(out);
     if compressor.compress(input_slice, &mut writer).is_err() {
         return 0;
@@ -701,7 +706,7 @@ where
         return 0;
     };
 
-    let input_slice = unsafe { std::slice::from_raw_parts(input, input_len) };
+    let input_slice = unsafe { slice::from_raw_parts(input, input_len) };
 
     if compressor
         .decompress(input_slice, decompression_buffer.as_writer())
@@ -751,11 +756,11 @@ struct CryptoBufferBuilder<'a> {
 
 impl<'a> CryptoBufferBuilder<'a> {
     fn with_capacity(capacity: usize) -> Result<CryptoBufferBuilder<'a>, ErrorStack> {
-        let mut data: *mut u8 = std::ptr::null_mut();
+        let mut data: *mut u8 = ptr::null_mut();
         let buffer = unsafe { crate::cvt_p(ffi::CRYPTO_BUFFER_alloc(&mut data, capacity))? };
         Ok(CryptoBufferBuilder {
             buffer,
-            cursor: std::io::Cursor::new(unsafe { std::slice::from_raw_parts_mut(data, capacity) }),
+            cursor: std::io::Cursor::new(unsafe { slice::from_raw_parts_mut(data, capacity) }),
         })
     }
 

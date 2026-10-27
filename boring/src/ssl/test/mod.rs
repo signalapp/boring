@@ -4,7 +4,8 @@ use std::io::prelude::*;
 use std::mem;
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 use crate::error::ErrorStack;
@@ -354,6 +355,35 @@ fn test_select_cert_ok() {
 }
 
 #[test]
+fn test_select_cert_last_setter_wins() {
+    let old_calls = Arc::new(AtomicUsize::new(0));
+    let action_calls = Arc::new(AtomicUsize::new(0));
+    let mut server = Server::builder();
+
+    let old_calls_clone = old_calls.clone();
+    server
+        .ctx()
+        .set_select_certificate_callback(move |_client_hello| {
+            old_calls_clone.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+
+    let action_calls_clone = action_calls.clone();
+    server
+        .ctx()
+        .set_select_certificate_callback_with_action(move |_client_hello| {
+            action_calls_clone.fetch_add(1, Ordering::Relaxed);
+            Ok(ssl::SelectCertAction::Success)
+        });
+
+    let server = server.build();
+    server.client().connect();
+
+    assert_eq!(old_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(action_calls.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn test_mutable_store() {
     #![allow(deprecated)]
 
@@ -410,6 +440,28 @@ fn test_select_cert_error() {
 
     let client = server.client();
     client.connect_err();
+}
+
+#[test]
+fn test_select_cert_disable_ech_without_ech_fails() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut server = Server::builder();
+    server.should_error();
+    let callback_calls = calls.clone();
+    server
+        .ctx()
+        .set_select_certificate_callback_with_action(move |_client_hello| {
+            if callback_calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(ssl::SelectCertAction::DisableEch)
+            } else {
+                Err(ssl::SelectCertError::ERROR)
+            }
+        });
+    let server = server.build();
+
+    let client = server.client();
+    client.connect_err();
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -622,7 +674,7 @@ fn flush_panic() {
 fn refcount_ssl_context() {
     let mut ssl = {
         let ctx = SslContext::builder(SslMethod::tls()).unwrap();
-        ssl::Ssl::new(&ctx.build()).unwrap()
+        Ssl::new(&ctx.build()).unwrap()
     };
 
     {
@@ -1011,7 +1063,7 @@ fn psk_ciphers() {
     let mut server = Server::builder();
     server.ctx().set_cipher_list(CIPHER).unwrap();
     server.ctx().set_psk_server_callback(|_, identity, psk| {
-        assert!(identity.unwrap_or(&[]) == CLIENT_IDENT);
+        assert_eq!(identity.unwrap_or(&[]), CLIENT_IDENT);
         psk[..PSK.len()].copy_from_slice(PSK);
         SERVER_CALLED.store(true, Ordering::SeqCst);
         Ok(PSK.len())
@@ -1021,7 +1073,7 @@ fn psk_ciphers() {
 
     let mut client = server.client();
     // This test relies on TLS 1.2 suites
-    client.ctx().set_options(super::SslOptions::NO_TLSV1_3);
+    client.ctx().set_options(SslOptions::NO_TLSV1_3);
     client.ctx().set_cipher_list(CIPHER).unwrap();
     client
         .ctx()
@@ -1338,7 +1390,7 @@ fn peer_signature_algorithm_mtls_server_sees_client() {
     // Observe from a server-side HANDSHAKE_DONE info callback so the capture
     // happens synchronously during the server's accept, before the client's
     // connect() returns.
-    let captured = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured = std::sync::Arc::new(AtomicBool::new(false));
 
     let mut server_builder = Server::builder();
     {
@@ -1356,7 +1408,7 @@ fn peer_signature_algorithm_mtls_server_sees_client() {
                 if mode == SslInfoCallbackMode::HANDSHAKE_DONE {
                     if let Some(sa) = ssl.peer_signature_algorithm() {
                         assert!(sa.name().is_some(), "client sig scheme should have a name");
-                        captured_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                        captured_cb.store(true, Ordering::SeqCst);
                     }
                 }
             });
@@ -1375,7 +1427,7 @@ fn peer_signature_algorithm_mtls_server_sees_client() {
     let _ = client_builder.connect();
 
     assert!(
-        captured.load(std::sync::atomic::Ordering::SeqCst),
+        captured.load(Ordering::SeqCst),
         "server should observe client signature scheme during mTLS",
     );
 }
@@ -1384,7 +1436,7 @@ fn peer_signature_algorithm_mtls_server_sees_client() {
 fn signature_algorithm_used_server_default() {
     // BoringSSL only retains signature_algorithm_used during the handshake, so we
     // capture it from a HANDSHAKE_DONE info callback.
-    let captured = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured = std::sync::Arc::new(AtomicBool::new(false));
 
     let mut server_builder = Server::builder();
     {
@@ -1395,7 +1447,7 @@ fn signature_algorithm_used_server_default() {
                 if mode == SslInfoCallbackMode::HANDSHAKE_DONE {
                     if let Some(sa) = ssl.signature_algorithm_used() {
                         assert!(sa.name().is_some());
-                        captured_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                        captured_cb.store(true, Ordering::SeqCst);
                     }
                 }
             });
@@ -1404,7 +1456,7 @@ fn signature_algorithm_used_server_default() {
     let _ = server.client_with_root_ca().connect();
 
     assert!(
-        captured.load(std::sync::atomic::Ordering::SeqCst),
+        captured.load(Ordering::SeqCst),
         "server should observe signature_algorithm_used at HANDSHAKE_DONE",
     );
 }
@@ -1437,7 +1489,7 @@ fn signature_algorithm_used_mtls_client() {
     }
     let server = server_builder.build();
 
-    let captured = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured = std::sync::Arc::new(AtomicBool::new(false));
     let captured_cb = std::sync::Arc::clone(&captured);
 
     let mut client_builder = server.client_with_root_ca();
@@ -1455,14 +1507,14 @@ fn signature_algorithm_used_mtls_client() {
             if mode == SslInfoCallbackMode::HANDSHAKE_DONE {
                 if let Some(sa) = ssl.signature_algorithm_used() {
                     assert!(sa.name().is_some());
-                    captured_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+                    captured_cb.store(true, Ordering::SeqCst);
                 }
             }
         });
     let _ = client_builder.connect();
 
     assert!(
-        captured.load(std::sync::atomic::Ordering::SeqCst),
+        captured.load(Ordering::SeqCst),
         "client should observe signature_algorithm_used at HANDSHAKE_DONE in mTLS",
     );
 }
