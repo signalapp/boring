@@ -861,7 +861,7 @@ fn generate_bindings(config: &Config) -> Result<PathBuf, Box<dyn std::error::Err
     bindings
         .write(Box::new(&mut source_code))
         .map_err(|e| format!("Couldn't serialize bindings: {e}"))?;
-    ensure_err_lib_enum_is_named(&mut source_code);
+    ensure_err_lib_enum_is_named(&mut source_code)?;
     let bindings_path = config.out_dir.join("bindings.rs");
     fs::write(&bindings_path, source_code).map_err(|e| {
         format!(
@@ -872,16 +872,36 @@ fn generate_bindings(config: &Config) -> Result<PathBuf, Box<dyn std::error::Err
     Ok(bindings_path)
 }
 
-/// err.h has anonymous `enum { ERR_LIB_NONE = 1 }`, which makes a dodgy `_bindgen_ty_1` name
-fn ensure_err_lib_enum_is_named(source_code: &mut Vec<u8>) {
+/// err.h has anonymous `enum { ERR_LIB_NONE = 1 }`, which makes a dodgy `_bindgen_ty_N` name
+fn ensure_err_lib_enum_is_named(source_code: &mut Vec<u8>) -> Result<(), String> {
     let src = String::from_utf8_lossy(source_code);
-    let enum_type = src
-        .split_once("ERR_LIB_SSL:")
-        .and_then(|(_, def)| Some(def.split_once('=')?.0))
-        .unwrap_or("_bindgen_ty_1");
+    let enum_type = find_err_lib_enum_type(&src)
+        .ok_or("Couldn't find the type of ERR_LIB_SSL in the generated bindings")?
+        .to_owned();
 
     source_code.extend_from_slice(
         format!("\n/// Newtype for [`ERR_LIB_SSL`] constants\npub use {enum_type} as ErrLib;\n")
             .as_bytes(),
     );
+    Ok(())
+}
+
+/// Finds `T` in `pub const ERR_LIB_SSL: T = ...;`.
+///
+/// bindgen only formats its output when rustfmt is available; otherwise it writes a raw token
+/// stream with a space between every token (`ERR_LIB_SSL : T = ...`), so this can't assume any
+/// particular whitespace.
+fn find_err_lib_enum_type(src: &str) -> Option<&str> {
+    const CONST_NAME: &str = "ERR_LIB_SSL";
+    src.match_indices(CONST_NAME).find_map(|(index, _)| {
+        let rest = src[index + CONST_NAME.len()..]
+            .trim_start()
+            .strip_prefix(':')?
+            .trim_start();
+        let type_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (enum_type, rest) = rest.split_at(type_len);
+        (!enum_type.is_empty() && rest.trim_start().starts_with('=')).then_some(enum_type)
+    })
 }
