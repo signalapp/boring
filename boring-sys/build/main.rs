@@ -262,6 +262,15 @@ fn get_boringssl_cmake_config(config: &Config) -> cmake::Config {
             .define("CMAKE_ASM_COMPILER_TARGET", &config.target);
     }
 
+    if !config.features.fips {
+        if let Some(cc) = &config.env.cc {
+            boringssl_cmake.define("CMAKE_C_COMPILER", cc);
+        }
+        if let Some(cxx) = &config.env.cxx {
+            boringssl_cmake.define("CMAKE_CXX_COMPILER", cxx);
+        }
+    }
+
     if let Some(sysroot) = &config.env.sysroot {
         boringssl_cmake.define("CMAKE_SYSROOT", sysroot);
     }
@@ -786,8 +795,7 @@ fn generate_bindings(config: &Config) -> Result<PathBuf, Box<dyn std::error::Err
         .opaque_type("FILE")
         .clang_args(get_extra_clang_args_for_bindgen(config))
         .clang_arg("-I")
-        .clang_arg(include_path.display().to_string())
-        .formatter(bindgen::Formatter::Prettyplease);
+        .clang_arg(include_path.display().to_string());
 
     if let Some(sysroot) = &config.env.sysroot {
         builder = builder
