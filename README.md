@@ -1,0 +1,1 @@
+This is Signal's fork of [cloudflare/boring](https://github.com/cloudflare/boring/) for use in [libsignal](https://github.com/signalapp/libsignal/). General-purpose use is not supported. Please make any requests or reports upstream unless it pertains to Signal's specific additions.
